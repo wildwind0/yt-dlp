@@ -1,7 +1,10 @@
+import base64
+import json
 import random
 import re
 import string
 import time
+import urllib.parse
 
 from .common import InfoExtractor
 from ..aes import aes_cbc_encrypt_bytes
@@ -150,6 +153,194 @@ class TencentBaseIE(InfoExtractor):
         return re.sub(
             r'\s*[_\-]\s*(?:Watch online|Watch HD Video Online|WeTV|腾讯视频|(?:高清)?1080P在线观看平台).*?$',
             '', title or '').strip() or None
+
+
+class TencentMeetingIE(InfoExtractor):
+    IE_NAME = 'tencentmeeting'
+    _VALID_URL = r'https?://meeting\.tencent\.com/(?:cw|crm)/(?P<id>[0-9A-Za-z_-]+)(?:[/?#]|$)'
+
+    _TESTS = [{
+        'url': 'https://meeting.tencent.com/cw/NADkALW2a7',
+        'info_dict': {
+            'id': '1820295070338134016',
+            'ext': 'mp4',
+            'title': '1分钟上手云录制',
+            'duration': 84.66,
+            'timestamp': 1722827138,
+            'upload_date': '20240805',
+            'thumbnail': r're:^https?://.+\.png',
+        },
+        'params': {'skip_download': True},
+    }, {
+        'url': 'https://meeting.tencent.com/crm/NADkALW2a7',
+        'info_dict': {
+            'id': '1820295070338134016',
+            'ext': 'mp4',
+            'title': '1分钟上手云录制',
+            'duration': 84.66,
+            'timestamp': 1722827138,
+            'upload_date': '20240805',
+            'thumbnail': r're:^https?://.+\.png',
+        },
+        'params': {'skip_download': True},
+    }]
+
+    def _decode_b64_field(self, value):
+        if not value:
+            return None
+        try:
+            return base64.b64decode(value).decode('utf-8')
+        except Exception:
+            return value
+
+    def _parse_share_query(self, server_data, url):
+        share_query = {'short_link': self._match_id(url)}
+        for query_string in (
+                traverse_obj(server_data, ('short_url_info', 'long_url')),
+                server_data.get('fullLongUrlSearch')):
+            if not query_string:
+                continue
+            share_query.update({
+                key: values[-1] for key, values in urllib.parse.parse_qs(
+                    query_string.lstrip('?')).items() if values
+            })
+        return share_query
+
+    def _extract_page_data(self, url, display_id):
+        webpage = self._download_webpage(url, display_id)
+        nextjs_data = self._search_nextjs_v13_data(webpage, display_id, fatal=False)
+        if nextjs_data:
+            return url, webpage, nextjs_data
+
+        redirect_url = self._search_regex(
+            r'window\.location\.replace\("(?P<url>https?://meeting\.tencent\.com/cw/[0-9A-Za-z_-]+)"\)',
+            webpage, 'redirect url', default=None, group='url')
+        if not redirect_url:
+            return url, webpage, nextjs_data
+
+        webpage = self._download_webpage(redirect_url, display_id)
+        return redirect_url, webpage, self._search_nextjs_v13_data(webpage, display_id, fatal=False)
+
+    def _call_common_record_info(self, share_id, short_url_code, video_password):
+        api_data = self._download_json(
+            'https://meeting.tencent.com/wemeet-tapi/v2/meetlog/public/detail/common-record-info',
+            short_url_code, data=json.dumps({
+                'pk_meeting_info_id': '',
+                'sharing_id': share_id,
+                'is_single': False,
+                'cover_image_style': 'meetlog_detail_webp_1000',
+                'ticket': '',
+                'randstr': '',
+                'pwd': video_password,
+                'activity_uid': '',
+                'lang': 'zh',
+                'is_origin_content': True,
+                'is_cve': True,
+                'forward_cgi_path': 'shares',
+                'enter_from': 'share',
+                'short_url_code': short_url_code,
+                'is_short_ctw': False,
+            }).encode(), headers={
+                'Accept': 'application/json, text/plain, */*',
+                'Content-Type': 'application/json',
+                'Origin': 'https://meeting.tencent.com',
+                'Referer': 'https://meeting.tencent.com/',
+            })
+        if api_data.get('code') != 0:
+            raise ExtractorError(
+                f'Tencent Meeting said: {api_data.get("message") or api_data.get("msg") or "Unable to fetch recording metadata"}',
+                expected=True)
+        return api_data
+
+    def _call_sign_api(self, url, record, video_password, share_id):
+        query = {
+            'id': record['sharing_id'],
+            'source': 'shares',
+            'sharing_id': share_id or record['sharing_id'],
+            'need_multi_stream': 1,
+        }
+        if video_password:
+            query['pwd'] = video_password
+
+        api_data = self._download_json(
+            'https://meeting.tencent.com/wemeet-cloudrecording-webapi/v1/sign',
+            record['id'], query=query, headers={'Referer': url})
+
+        if api_data.get('code') != 0:
+            raise ExtractorError(
+                f'Tencent Meeting said: {api_data.get("message") or "Unable to fetch the recording URL"}',
+                expected=True)
+        return api_data
+
+    def _build_record_info(self, url, subject, record, video_password, share_id, *, single_record):
+        api_data = self._call_sign_api(url, record, video_password, share_id)
+        title = subject if single_record else f'{subject} - {record.get("name") or record["id"]}'
+        video_url = api_data.get('signurl') or traverse_obj(api_data, ('data', 'sign_urls', 0, 'sign_url'))
+        if not video_url:
+            raise ExtractorError('Tencent Meeting did not return a playable recording URL', expected=True)
+
+        return {
+            'id': record['id'],
+            'title': title,
+            'url': video_url,
+            'ext': 'mp4',
+            'thumbnail': record.get('cover_url'),
+            'duration': float_or_none(record.get('duration'), scale=1000),
+            'timestamp': int_or_none(record.get('start_time'), scale=1000),
+            'filesize': int_or_none(record.get('size')),
+            'http_headers': {'Referer': url},
+            'vcodec': 'none' if record.get('upload_file_type') == 'audio' else None,
+        }
+
+    def _real_extract(self, url):
+        display_id = self._match_id(url)
+        url, _, nextjs_data = self._extract_page_data(url, display_id)
+        server_data = traverse_obj(
+            nextjs_data, (..., 'data', 'serverData', {dict}), get_all=False)
+        if not server_data:
+            raise ExtractorError('Unable to extract Tencent Meeting data')
+
+        share_query = self._parse_share_query(server_data, url)
+        share_id = share_query.get('id') or server_data.get('sharing_id') or server_data.get('share_id')
+        video_password = self.get_param('videopassword') or server_data.get('pwd') or server_data.get('sharing_password')
+
+        response_code = int_or_none(server_data.get('code'))
+        recordings = traverse_obj(server_data, ('recordings', ..., {dict})) or []
+        if response_code not in (None, 0) or not recordings:
+            if video_password and share_id:
+                server_data = traverse_obj(
+                    self._call_common_record_info(share_id, display_id, video_password),
+                    ('data', {dict}), get_all=False) or {}
+                recordings = traverse_obj(server_data, ('recordings', ..., {dict})) or []
+                if not recordings:
+                    error_msg = 'No recordings found'
+                else:
+                    error_msg = None
+            elif server_data.get('sharing_pwd'):
+                error_msg = 'This recording requires a password'
+            elif server_data.get('gray_record_approval_link') or server_data.get('gray_middle_page'):
+                error_msg = 'This recording requires approval or login and is not publicly accessible'
+            else:
+                error_msg = server_data.get('message') or f'Access denied (code {response_code})'
+            if error_msg:
+                raise ExtractorError(f'Tencent Meeting said: {error_msg}', expected=True)
+
+        if not recordings:
+            raise ExtractorError(
+                f'Tencent Meeting said: {server_data.get("message") or "No recordings found"}',
+                expected=True)
+
+        subject = self._decode_b64_field(
+            traverse_obj(server_data, ('meeting_info', 'subject')) or server_data.get('subject')) or display_id
+
+        entries = [
+            self._build_record_info(
+                url, subject, record, video_password, share_id, single_record=len(recordings) == 1)
+            for record in recordings
+        ]
+        if len(entries) == 1:
+            return entries[0]
+        return self.playlist_result(entries, display_id, subject)
 
 
 class VQQBaseIE(TencentBaseIE):
