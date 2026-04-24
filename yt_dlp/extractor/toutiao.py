@@ -1,3 +1,4 @@
+import base64
 import json
 import urllib.parse
 
@@ -83,24 +84,46 @@ class ToutiaoIE(InfoExtractor):
         ))
 
         formats = []
-        for video in traverse_obj(video_data, (
-            'videoPlayInfo', 'video_list', lambda _, v: v['main_url'],
-        )):
+        for video, override, meta_key in (
+            *(
+                (video, {}, 'video_meta') for video in traverse_obj(video_data, (
+                    'videoPlayInfo', 'video_list', lambda _, v: v['main_url'],
+                ))
+            ),
+            *(
+                (video, {'acodec': 'none'}, 'video_meta') for video in traverse_obj(video_data, (
+                    'videoPlayInfo', 'dynamic_video', 'dynamic_video_list', lambda _, v: v['main_url'],
+                ))
+            ),
+            *(
+                (audio, {'vcodec': 'none', 'ext': 'm4a'}, 'audio_meta') for audio in traverse_obj(video_data, (
+                    'videoPlayInfo', 'dynamic_video', 'dynamic_audio_list', lambda _, v: v['main_url'],
+                ))
+            ),
+        ):
+            media_url = url_or_none(video.get('main_url'))
+            if not media_url:
+                media_url = try_call(lambda: base64.b64decode(video['main_url']).decode())
+
+            if not media_url:
+                continue
+
             formats.append({
-                'url': video['main_url'],
-                **traverse_obj(video, ('video_meta', {
+                'url': media_url,
+                **traverse_obj(video, (meta_key, {
                     'acodec': ('audio_profile', {str}),
                     'asr': ('audio_sample_rate', {int_or_none}),
                     'audio_channels': ('audio_channels', {float_or_none}, {int_or_none}),
-                    'ext': ('vtype', {str}),
+                    'ext': (('vtype', 'atype'), {str}, any),
                     'filesize': ('size', {int_or_none}),
-                    'format_id': ('definition', {str}),
+                    'format_id': (('definition', 'quality_type'), {str_or_none}, any),
                     'fps': ('fps', {int_or_none}),
                     'height': ('vheight', {int_or_none}),
                     'tbr': ('real_bitrate', {float_or_none(scale=1000)}),
                     'vcodec': ('codec_type', {str}),
                     'width': ('vwidth', {int_or_none}),
                 })),
+                **override,
             })
 
         return {

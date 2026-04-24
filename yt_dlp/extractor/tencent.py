@@ -340,6 +340,11 @@ class TencentMeetingIE(InfoExtractor):
         ]
         if len(entries) == 1:
             return entries[0]
+        if not self.get_param('playlist_items'):
+            self.report_warning(
+                'Tencent Meeting share contains multiple recordings; downloading the first one by default. '
+                'Use --playlist-items to select another item, or --playlist-items 1: to download all recordings')
+            return entries[0]
         return self.playlist_result(entries, display_id, subject)
 
 
