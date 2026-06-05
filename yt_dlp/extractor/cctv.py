@@ -3,8 +3,10 @@ import re
 from .common import InfoExtractor
 from ..utils import (
     float_or_none,
+    qualities,
     try_get,
     unified_timestamp,
+    url_or_none,
 )
 
 
@@ -135,6 +137,14 @@ class CCTVIE(InfoExtractor):
         'only_matching': True,
     }]
 
+    _CHAPTER_KEYS = ('lowChapters', 'chapters', 'chapters2', 'chapters3', 'chapters4')
+
+    @staticmethod
+    def _chapter_bitrate(fragment_url):
+        bitrate = try_get(
+            re.search(r'_h264(?P<tbr>\d+)', fragment_url or ''), lambda x: x.group('tbr'))
+        return float_or_none(bitrate, scale=1000)
+
     def _real_extract(self, url):
         video_id = self._match_id(url)
         webpage = self._download_webpage(url, video_id)
@@ -162,26 +172,83 @@ class CCTVIE(InfoExtractor):
 
         formats = []
 
+        chapter_qualities = qualities(self._CHAPTER_KEYS)
+
         video = data.get('video')
+        chapter_streams = {}
         if isinstance(video, dict):
-            for quality, chapters_key in enumerate(('lowChapters', 'chapters')):
-                video_url = try_get(
-                    video, lambda x: x[chapters_key][0]['url'], str)
-                if video_url:
+            for chapters_key in self._CHAPTER_KEYS:
+                fragments = []
+                for fragment in try_get(video, lambda x: x[chapters_key], list) or []:
+                    fragment_url = url_or_none(fragment.get('url'))
+                    if fragment_url:
+                        fragments.append({
+                            'url': fragment_url,
+                            'duration': float_or_none(fragment.get('duration')),
+                        })
+                if fragments:
+                    chapter_streams[chapters_key] = fragments
+                    video_url = fragments[0]['url']
                     formats.append({
                         'url': video_url,
-                        'format_id': 'http',
-                        'quality': quality,
-                        # Sample clip
-                        'preference': -10,
+                        'format_id': f'http-{chapters_key}',
+                        'quality': chapter_qualities(chapters_key),
                     })
 
-        hls_url = try_get(data, lambda x: x['hls_url'], str)
+        hls_urls = []
+        manifest = data.get('manifest')
+        if isinstance(manifest, dict):
+            for hls_key in ('hls_enc_url', 'hls_h5e_url', 'hls_enc2_url'):
+                hls_url = url_or_none(manifest.get(hls_key))
+                if hls_url:
+                    hls_urls.append(hls_url)
+        hls_url = url_or_none(data.get('hls_url'))
         if hls_url:
-            hls_url = re.sub(r'maxbr=\d+&?', '', hls_url)
-            formats.extend(self._extract_m3u8_formats(
+            hls_urls.append(hls_url)
+
+        chapter_format_info = {}
+        hls_formats = []
+        for hls_url in hls_urls:
+            hls_url = re.sub(r'([?&])maxbr=\d+&?', r'\1', hls_url).rstrip('?&')
+            hls_formats = self._extract_m3u8_formats(
                 hls_url, video_id, 'mp4', entry_protocol='m3u8_native',
-                m3u8_id='hls', fatal=False))
+                m3u8_id='hls', fatal=False)
+            if hls_formats:
+                break
+
+        hls_variants = sorted({
+            (fmt.get('tbr'), fmt.get('width'), fmt.get('height'))
+            for fmt in hls_formats if fmt.get('tbr')
+        })
+        for chapters_key in sorted(chapter_streams, key=chapter_qualities):
+            tbr = self._chapter_bitrate(chapter_streams[chapters_key][0]['url'])
+            width = height = None
+            if hls_variants:
+                _, width, height = min(hls_variants, key=lambda x: abs((x[0] or 0) - (tbr or 0)))
+            chapter_format_info[chapters_key] = {
+                'tbr': tbr,
+                'width': width,
+                'height': height,
+            }
+
+        for fmt in formats:
+            fmt.update(chapter_format_info.get(fmt['format_id'][len('http-'):], {}))
+
+        if any(len(fragments) > 1 for fragments in chapter_streams.values()):
+            for fmt in formats:
+                chapters_key = fmt['format_id'][len('http-'):]
+                fragments = chapter_streams.get(chapters_key)
+                if not fragments:
+                    continue
+                fmt.update({
+                    'ext': 'mp4',
+                    'protocol': 'http_mp4_segments',
+                    'fragments': fragments,
+                })
+            hls_formats = []
+
+        if hls_formats:
+            formats.extend(hls_formats)
 
         uploader = data.get('editer_name')
         description = self._html_search_meta(

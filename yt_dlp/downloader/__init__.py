@@ -30,6 +30,7 @@ from .hls import HlsFD
 from .http import HttpFD
 from .ism import IsmFD
 from .mhtml import MhtmlFD
+from .mp4segments import Mp4SegmentsFD
 from .niconico import NiconicoLiveFD
 from .rtmp import RtmpFD
 from .rtsp import RtspFD
@@ -49,6 +50,7 @@ PROTOCOL_MAP = {
     'f4m': F4mFD,
     'http_dash_segments': DashSegmentsFD,
     'http_dash_segments_generator': DashSegmentsFD,
+    'http_mp4_segments': Mp4SegmentsFD,
     'ism': IsmFD,
     'mhtml': MhtmlFD,
     'niconico_live': NiconicoLiveFD,
@@ -68,6 +70,7 @@ def shorten_protocol_name(proto, simplify=False):
         'rtmp_ffmpeg': 'rtmpF',
         'http_dash_segments': 'dash',
         'http_dash_segments_generator': 'dashG',
+        'http_mp4_segments': 'mp4seg',
         'websocket_frag': 'WSfrag',
     }
     if simplify:
@@ -77,6 +80,7 @@ def shorten_protocol_name(proto, simplify=False):
             'm3u8': 'm3u8',  # Reverse above m3u8 mapping
             'm3u8_native': 'm3u8',
             'http_dash_segments_generator': 'dash',
+            'http_mp4_segments': 'mp4seg',
             'rtmp_ffmpeg': 'rtmp',
             'm3u8_frag_urls': 'm3u8',
             'dash_frag_urls': 'dash',
