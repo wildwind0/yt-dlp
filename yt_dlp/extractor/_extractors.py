@@ -319,6 +319,7 @@ from .cda import (
 )
 from .cellebrite import CellebriteIE
 from .ceskatelevize import CeskaTelevizeIE
+from .centv import CETVPlayerIE
 from .cgtn import CGTNIE
 from .charlierose import CharlieRoseIE
 from .chaturbate import ChaturbateIE
