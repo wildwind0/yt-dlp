@@ -193,18 +193,22 @@ class CCTVIE(InfoExtractor):
                         'url': video_url,
                         'format_id': f'http-{chapters_key}',
                         'quality': chapter_qualities(chapters_key),
+                        # CCTV chapter URLs are a fallback and have historically
+                        # pointed to sample or otherwise inferior streams.
+                        'preference': -10,
                     })
 
         hls_urls = []
-        manifest = data.get('manifest')
-        if isinstance(manifest, dict):
-            for hls_key in ('hls_enc_url', 'hls_h5e_url', 'hls_enc2_url'):
-                hls_url = url_or_none(manifest.get(hls_key))
-                if hls_url:
-                    hls_urls.append(hls_url)
         hls_url = url_or_none(data.get('hls_url'))
         if hls_url:
             hls_urls.append(hls_url)
+        else:
+            manifest = data.get('manifest')
+            if isinstance(manifest, dict):
+                for hls_key in ('hls_enc_url', 'hls_h5e_url', 'hls_enc2_url'):
+                    hls_url = url_or_none(manifest.get(hls_key))
+                    if hls_url:
+                        hls_urls.append(hls_url)
 
         chapter_format_info = {}
         hls_formats = []

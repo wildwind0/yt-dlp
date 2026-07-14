@@ -145,6 +145,36 @@ class TestFormatSelection(unittest.TestCase):
         # See: https://github.com/yt-dlp/yt-dlp/pulls/8797
         test('7_a/worst', '35')
 
+    def test_format_selection_prefers_hls_over_cctv_http_fallback(self):
+        formats = [
+            {
+                'format_id': 'http-chapters4',
+                'ext': 'mp4',
+                'protocol': 'http_mp4_segments',
+                'preference': -10,
+                'quality': 4,
+                'tbr': 2048,
+                'width': 1280,
+                'height': 720,
+                'url': TEST_URL,
+            },
+            {
+                'format_id': 'hls-2048',
+                'ext': 'mp4',
+                'protocol': 'm3u8_native',
+                'tbr': 2048,
+                'width': 1280,
+                'height': 720,
+                'url': TEST_URL,
+            },
+        ]
+        info_dict = _make_result(formats)
+
+        ydl = YDL()
+        ydl.process_ie_result(info_dict.copy())
+        downloaded = ydl.downloaded_info_dicts[0]
+        self.assertEqual(downloaded['format_id'], 'hls-2048')
+
     def test_format_selection_audio(self):
         formats = [
             {'format_id': 'audio-low', 'ext': 'webm', 'preference': 1, 'vcodec': 'none', 'url': TEST_URL},
