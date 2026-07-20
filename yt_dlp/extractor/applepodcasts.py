@@ -4,12 +4,16 @@ from ..utils import (
     clean_podcast_url,
     int_or_none,
     parse_iso8601,
+    str_or_none,
 )
 from ..utils.traversal import traverse_obj
 
 
 class ApplePodcastsIE(InfoExtractor):
-    _VALID_URL = r'https?://podcasts\.apple\.com/(?:[^/]+/)?podcast(?:/[^/]+){1,2}.*?\bi=(?P<id>\d+)'
+    _VALID_URL = r'''(?x)https?://podcasts\.apple\.com/
+        (?:(?P<country>[^/?#]+)/)?podcast
+        (?:/(?!id\d+(?:[/?#]|$))[^/?#]+)*(?:/id(?P<collection_id>\d+))?
+        [^#]*?[?&]i=(?P<id>\d+)'''
     _TESTS = [{
         'url': 'https://podcasts.apple.com/us/podcast/urbana-podcast-724-by-david-penn/id1531349107?i=1000748574256',
         'md5': 'f8a6f92735d0cfbd5e6a7294151e28d8',
@@ -53,7 +57,41 @@ class ApplePodcastsIE(InfoExtractor):
     }]
 
     def _real_extract(self, url):
-        episode_id = self._match_id(url)
+        match = self._match_valid_url(url)
+        episode_id, collection_id = match.group('id', 'collection_id')
+
+        # The Podcasts web frontend is occasionally unavailable (and may return
+        # HTTP 500), whereas the iTunes lookup API exposes the publisher's RSS
+        # enclosure URL directly. Prefer it so that downloads do not depend on
+        # Apple rendering the episode page.
+        if collection_id:
+            lookup = self._download_json(
+                'https://itunes.apple.com/lookup', episode_id, 'Downloading podcast metadata',
+                fatal=False, query={
+                    'id': collection_id,
+                    'entity': 'podcastEpisode',
+                    'country': match.group('country') or 'us',
+                    'limit': 200,
+                }) or {}
+            episode = traverse_obj(lookup, (
+                'results', lambda _, v: str_or_none(v.get('trackId')) == episode_id, {dict}, any))
+            episode_url = traverse_obj(episode, ('episodeUrl', {clean_podcast_url}))
+            if episode_url:
+                return {
+                    'id': episode_id,
+                    **traverse_obj(episode, {
+                        'title': ('trackName', {str}),
+                        'description': ('description', {str}),
+                        'timestamp': ('releaseDate', {parse_iso8601}),
+                        'duration': ('trackTimeMillis', {int_or_none(scale=1000)}),
+                        'episode': ('trackName', {str}),
+                        'series': ('collectionName', {str}),
+                        'thumbnail': ('artworkUrl600', {str}),
+                    }),
+                    'url': episode_url,
+                    'vcodec': 'none',
+                }
+
         webpage = self._download_webpage(url, episode_id)
         server_data = self._search_json(
             r'<script [^>]*\bid=["\']serialized-server-data["\'][^>]*>', webpage,

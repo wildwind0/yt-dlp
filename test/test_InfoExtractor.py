@@ -14,6 +14,7 @@ import threading
 from test.helper import FakeYDL, expect_dict, expect_value, http_server_port
 from yt_dlp.compat import compat_etree_fromstring
 from yt_dlp.extractor import YoutubeIE, get_info_extractor
+from yt_dlp.extractor.applepodcasts import ApplePodcastsIE
 from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.utils import (
     ExtractorError,
@@ -64,6 +65,47 @@ class TestInfoExtractor(unittest.TestCase):
 
     def test_ie_key(self):
         self.assertEqual(get_info_extractor(YoutubeIE.ie_key()), YoutubeIE)
+
+    def test_apple_podcasts_lookup(self):
+        class ApplePodcastsTestIE(ApplePodcastsIE):
+            def _download_json(self, url, video_id, *args, **kwargs):
+                assert url == 'https://itunes.apple.com/lookup'
+                assert video_id == '1000777348013'
+                assert kwargs['query'] == {
+                    'id': '1512932915',
+                    'entity': 'podcastEpisode',
+                    'country': 'cn',
+                    'limit': 200,
+                }
+                return {
+                    'results': [{
+                        'trackId': 1000777348013,
+                        'trackName': 'Episode title',
+                        'description': 'Episode description',
+                        'releaseDate': '2026-07-18T16:00:00Z',
+                        'trackTimeMillis': 3469000,
+                        'collectionName': 'Podcast title',
+                        'artworkUrl600': 'https://example.com/artwork.jpg',
+                        'episodeUrl': 'https://publisher.example.com/episode.m4a',
+                    }],
+                }
+
+            def _download_webpage(self, *args, **kwargs):
+                self.fail('Lookup result should avoid downloading the Apple Podcasts webpage')
+
+        info = ApplePodcastsTestIE(FakeYDL())._real_extract(
+            'https://podcasts.apple.com/cn/podcast/example/id1512932915?i=1000777348013')
+        expect_dict(self, info, {
+            'id': '1000777348013',
+            'title': 'Episode title',
+            'episode': 'Episode title',
+            'description': 'Episode description',
+            'url': 'https://publisher.example.com/episode.m4a',
+            'duration': 3469,
+            'series': 'Podcast title',
+            'thumbnail': 'https://example.com/artwork.jpg',
+            'vcodec': 'none',
+        })
 
     def test_get_netrc_login_info(self):
         for params in [
